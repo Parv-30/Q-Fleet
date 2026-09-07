@@ -1,8 +1,5 @@
 # Q-Fleet AI
 
-Smart India Hackathon 2026 — Problem Statement 26138, "Quantum-Inspired Fuel
-Consumption Prediction and Green Fleet Optimization" (theme: Smart Vehicles).
-
 Q-Fleet AI is a decision-support platform for green fleet optimization in
 maritime shipping: it predicts a vessel's fuel consumption, operating cost,
 and voyage time with an ensemble ML model, converts that into lifecycle GHG
