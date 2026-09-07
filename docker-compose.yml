@@ -1,0 +1,82 @@
+services:
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    ports:
+      - "5672:5672" # AMQP
+      - "15672:15672" # management UI (guest/guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  data-service:
+    build:
+      context: .
+      dockerfile: services/data-service/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/srv/data
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  prediction-service:
+    build:
+      context: .
+      dockerfile: services/prediction-service/Dockerfile
+    ports:
+      - "8001:8001"
+    environment:
+      - DATA_SERVICE_URL=http://data-service:8000
+      - RABBITMQ_HOST=rabbitmq
+    volumes:
+      - ./data/models:/srv/data/models:ro
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  emissions-service:
+    build:
+      context: .
+      dockerfile: services/emissions-service/Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+
+  optimization-service:
+    build:
+      context: .
+      dockerfile: services/optimization-service/Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - DATA_SERVICE_URL=http://data-service:8000
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      data-service:
+        condition: service_started
+
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    ports:
+      - "8090:8080"
+    environment:
+      - DATA_SERVICE_URL=http://data-service:8000
+      - PREDICTION_SERVICE_URL=http://prediction-service:8001
+      - EMISSIONS_SERVICE_URL=http://emissions-service:8002
+      - OPTIMIZATION_SERVICE_URL=http://optimization-service:8003
+    depends_on:
+      - data-service
+      - prediction-service
+      - emissions-service
+      - optimization-service
