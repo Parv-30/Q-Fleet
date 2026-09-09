@@ -86,6 +86,35 @@ export interface RouteOption {
   via: string; // e.g. "Suez Canal, Bab-el-Mandeb Strait" or "Cape of Good Hope"
 }
 
+// --- /api/weather -------------------------------------------------------
+// Mirrors common/schemas.py's CurrentWeather / DailyForecast / WeatherSample.
+// One WeatherSample per waypoint sampled along the real computed route
+// (see data-service/app/weather.py). `current_speed` (ocean current) has no
+// free live source and is a documented constant placeholder even here.
+
+export interface CurrentWeather {
+  temperature: number; // degrees Celsius
+  wind_speed: number; // m/s
+  wave_height: number; // meters
+  current_speed: number; // knots, signed -- placeholder, no live source
+}
+
+export interface DailyForecast {
+  date: string; // ISO 8601 date, e.g. 2026-09-09 (or "unknown" on a per-point fetch error)
+  temp_max: number; // degrees Celsius
+  temp_min: number; // degrees Celsius
+  wind_speed_max: number; // m/s
+  wave_height_max: number; // meters
+}
+
+export interface WeatherSample {
+  lat: number;
+  lon: number;
+  current: CurrentWeather;
+  forecast: DailyForecast[];
+  error?: string | null; // set (fallback values held) when Open-Meteo was unreachable for this point
+}
+
 // --- Optimization constraints (mirrors common/schemas.py's OptimizationConstraints) ---
 // Every field optional; a field left undefined/null means "fully open" for
 // QPSO's search on that dimension. See schemas.py's docstring for the full
