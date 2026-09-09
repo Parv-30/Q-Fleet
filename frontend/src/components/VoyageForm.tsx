@@ -1,6 +1,5 @@
 import { Loader2, Play, ChevronDown, Ship, Route as RouteIcon, Package, Gauge, Fuel as FuelIcon, CloudSun, CalendarClock, Settings2 } from 'lucide-react';
-import { type FormEvent, useEffect, useId, useMemo, useState } from 'react';
-import { getPorts, getRoutes, ApiError } from '../api';
+import { type FormEvent, useId, useMemo, useState } from 'react';
 import {
   FLEET_CATALOG,
   FUEL_LABELS,
@@ -34,6 +33,20 @@ import {
 interface VoyageFormProps {
   onRun: (request: OptimizationRequest) => void;
   isLoading: boolean;
+  // Route state is lifted to the parent (VoyageSetup) so the globe and this
+  // form share one source of truth instead of each fetching/holding its own
+  // copy -- see VoyageSetup.tsx for the two-way sync wiring.
+  ports: Port[];
+  portsError: string;
+  origin: string;
+  destination: string;
+  onOriginChange: (origin: string) => void;
+  onDestinationChange: (destination: string) => void;
+  routeOptions: RouteOption[];
+  routeLoading: boolean;
+  routeError: string;
+  selectedRouteIdx: number | 'either';
+  onSelectedRouteIdxChange: (idx: number | 'either') => void;
 }
 
 type VesselMode = 'open' | 'type' | 'exact';
@@ -111,21 +124,25 @@ const inputClass =
 const selectClass =
   'cursor-pointer rounded-lg border border-border bg-background px-3 py-2 text-sm text-foreground transition-colors duration-200 focus:outline-none focus:ring-2 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60';
 
-export default function VoyageForm({ onRun, isLoading }: VoyageFormProps) {
+export default function VoyageForm({
+  onRun,
+  isLoading,
+  ports,
+  portsError,
+  origin,
+  destination,
+  onOriginChange,
+  onDestinationChange,
+  routeOptions,
+  routeLoading,
+  routeError,
+  selectedRouteIdx,
+  onSelectedRouteIdxChange,
+}: VoyageFormProps) {
   // --- Vessel ---
   const [vesselMode, setVesselMode] = useState<VesselMode>('open');
   const [vesselId, setVesselId] = useState<string>('');
   const [vesselType, setVesselType] = useState<VesselType>('container');
-
-  // --- Route ---
-  const [ports, setPorts] = useState<Port[]>([]);
-  const [portsError, setPortsError] = useState<string>('');
-  const [origin, setOrigin] = useState<string>('');
-  const [destination, setDestination] = useState<string>('');
-  const [routeOptions, setRouteOptions] = useState<RouteOption[]>([]);
-  const [routeLoading, setRouteLoading] = useState(false);
-  const [routeError, setRouteError] = useState<string>('');
-  const [selectedRouteIdx, setSelectedRouteIdx] = useState<number | 'either'>('either');
 
   // --- Cargo ---
   const [cargoTonnes, setCargoTonnes] = useState<string>('');
@@ -170,42 +187,6 @@ export default function VoyageForm({ onRun, isLoading }: VoyageFormProps) {
   const iterationsId = useId();
   const swarmId = useId();
   const seedId = useId();
-
-  // Load port catalog once on mount.
-  useEffect(() => {
-    const controller = new AbortController();
-    getPorts(controller.signal)
-      .then(setPorts)
-      .catch((err) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setPortsError(err instanceof ApiError ? err.message : 'Could not load the port catalog.');
-      });
-    return () => controller.abort();
-  }, []);
-
-  // When both origin and destination are chosen, fetch real route options.
-  useEffect(() => {
-    if (!origin || !destination) {
-      setRouteOptions([]);
-      setRouteError('');
-      return;
-    }
-    const controller = new AbortController();
-    setRouteLoading(true);
-    setRouteError('');
-    getRoutes(origin, destination, controller.signal)
-      .then((options) => {
-        setRouteOptions(options);
-        setSelectedRouteIdx(options.length > 1 ? 'either' : 0);
-      })
-      .catch((err) => {
-        if (err instanceof DOMException && err.name === 'AbortError') return;
-        setRouteOptions([]);
-        setRouteError(err instanceof ApiError ? err.message : 'Could not compute a route for this port pair.');
-      })
-      .finally(() => setRouteLoading(false));
-    return () => controller.abort();
-  }, [origin, destination]);
 
   const toggleFuel = (fuel: FuelType) => {
     setSelectedFuels((prev) => {
@@ -405,7 +386,7 @@ export default function VoyageForm({ onRun, isLoading }: VoyageFormProps) {
                 <select
                   id={originId}
                   value={origin}
-                  onChange={(e) => setOrigin(e.target.value)}
+                  onChange={(e) => onOriginChange(e.target.value)}
                   className={selectClass}
                 >
                   <option value="">Any origin</option>
@@ -423,7 +404,7 @@ export default function VoyageForm({ onRun, isLoading }: VoyageFormProps) {
                 <select
                   id={destinationId}
                   value={destination}
-                  onChange={(e) => setDestination(e.target.value)}
+                  onChange={(e) => onDestinationChange(e.target.value)}
                   className={selectClass}
                 >
                   <option value="">Any destination</option>
@@ -464,7 +445,7 @@ export default function VoyageForm({ onRun, isLoading }: VoyageFormProps) {
                         type="button"
                         role="radio"
                         aria-checked={selectedRouteIdx === 'either'}
-                        onClick={() => setSelectedRouteIdx('either')}
+                        onClick={() => onSelectedRouteIdxChange('either')}
                         className={`cursor-pointer rounded-lg border px-3 py-2 text-left text-xs transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring ${
                           selectedRouteIdx === 'either'
                             ? 'border-primary bg-primary/10 text-foreground'
@@ -481,7 +462,7 @@ export default function VoyageForm({ onRun, isLoading }: VoyageFormProps) {
                         type="button"
                         role="radio"
                         aria-checked={selectedRouteIdx === idx}
-                        onClick={() => setSelectedRouteIdx(idx)}
+                        onClick={() => onSelectedRouteIdxChange(idx)}
                         className={`cursor-pointer rounded-lg border px-3 py-2 text-left text-xs transition-colors duration-150 focus:outline-none focus:ring-2 focus:ring-ring ${
                           selectedRouteIdx === idx
                             ? 'border-primary bg-primary/10 text-foreground'

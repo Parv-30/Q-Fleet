@@ -84,6 +84,13 @@ export interface RouteOption {
   destination: string;
   distance_km: number;
   via: string; // e.g. "Suez Canal, Bab-el-Mandeb Strait" or "Cape of Good Hope"
+  // Real sea-lane path this route follows, as [lat, lon] points in travel
+  // order (routing.py's RouteOption.path, a tuple of (lat, lon) tuples --
+  // JSON-serializes as an array of 2-element arrays). Used to draw the
+  // ACTUAL route shape on the globe (PortGlobe's pathsData layer) instead
+  // of a straight great-circle arc. Optional/defaults to empty since older
+  // hand-built fixtures may omit it.
+  path?: [number, number][];
 }
 
 // --- Optimization constraints (mirrors common/schemas.py's OptimizationConstraints) ---
