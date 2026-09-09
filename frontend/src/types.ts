@@ -198,6 +198,13 @@ export const OBJECTIVE_KEYS: ObjectiveKey[] = [
   'fleet_utilization',
 ];
 
+// Recharts renders SVG fill/stroke as literal attribute values, not CSS --
+// they will not pick up `.dark` class changes on their own. Two explicit
+// palettes are kept so ParetoChart can select the active one from the
+// isDark flag it receives as a prop. Each set is chosen to clear 4.5:1
+// contrast against its own card background (#FFFFFF light / #111A2E dark;
+// see design-system/q-fleet-ai/MASTER.md "Dark Mode Palette" for the
+// contrast table this was checked against).
 export const FUEL_COLORS: Record<FuelType, string> = {
   hfo: '#475569',
   diesel: '#1E40AF',
@@ -205,4 +212,13 @@ export const FUEL_COLORS: Record<FuelType, string> = {
   methanol: '#D97706',
   hydrogen: '#059669',
   ammonia: '#7C3AED',
+};
+
+export const FUEL_COLORS_DARK: Record<FuelType, string> = {
+  hfo: '#94A3B8',
+  diesel: '#60A5FA',
+  lng: '#38BDF8',
+  methanol: '#FBBF24',
+  hydrogen: '#34D399',
+  ammonia: '#A78BFA',
 };

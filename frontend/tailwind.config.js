@@ -17,7 +17,7 @@ export default {
         ring: 'var(--color-ring)',
       },
       fontFamily: {
-        sans: ['"Fira Sans"', 'system-ui', 'sans-serif'],
+        sans: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
         mono: ['"Fira Code"', 'ui-monospace', 'monospace'],
       },
       boxShadow: {

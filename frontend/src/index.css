@@ -1,26 +1,28 @@
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Fira+Sans:wght@300;400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;0,800;1,400&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --color-primary: #1e40af;
+  /* Light mode -- design-system/q-fleet-ai/MASTER.md, Global Rules > Color Palette */
+  --color-primary: #0f172a;
   --color-on-primary: #ffffff;
-  --color-secondary: #3b82f6;
-  --color-on-secondary: #000000;
-  --color-accent: #d97706;
-  --color-on-accent: #000000;
+  --color-secondary: #334155;
+  --color-on-secondary: #ffffff;
+  --color-accent: #0369a1;
+  --color-on-accent: #ffffff;
   --color-background: #f8fafc;
-  --color-foreground: #1e3a8a;
+  --color-foreground: #020617;
   --color-card: #ffffff;
-  --color-card-foreground: #1e3a8a;
-  --color-muted: #e9eef6;
+  --color-card-foreground: #020617;
+  --color-muted: #e8ecf1;
   --color-muted-foreground: #475569;
-  --color-border: #dbeafe;
+  --color-border: #e2e8f0;
   --color-destructive: #dc2626;
   --color-on-destructive: #ffffff;
-  --color-ring: #1e40af;
+  --color-ring: #0f172a;
 
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
@@ -38,23 +40,29 @@
   color-scheme: light;
 }
 
+/* Dark mode -- derived palette, documented in
+   design-system/q-fleet-ai/MASTER.md under "Dark Mode Palette". Keeps the
+   same navy/blue trust-and-authority character rather than inverting: deep
+   navy background (not pure black), card surface one step lighter than the
+   page for hierarchy, accent shifted to a brighter blue (#38BDF8) because
+   the light-mode accent fails 4.5:1 against white text on dark surfaces. */
 .dark {
-  --color-primary: #3b82f6;
-  --color-on-primary: #0b1220;
-  --color-secondary: #60a5fa;
-  --color-on-secondary: #0b1220;
-  --color-accent: #f59e0b;
-  --color-on-accent: #000000;
+  --color-primary: #e2e8f0;
+  --color-on-primary: #0f172a;
+  --color-secondary: #1e293b;
+  --color-on-secondary: #f1f5f9;
+  --color-accent: #38bdf8;
+  --color-on-accent: #0b1220;
   --color-background: #0b1220;
-  --color-foreground: #e2e8f0;
+  --color-foreground: #f1f5f9;
   --color-card: #111a2e;
-  --color-card-foreground: #e2e8f0;
-  --color-muted: #1c2a44;
+  --color-card-foreground: #f1f5f9;
+  --color-muted: #1e293b;
   --color-muted-foreground: #94a3b8;
-  --color-border: #1e3a5f;
+  --color-border: #243044;
   --color-destructive: #f87171;
-  --color-on-destructive: #0b1220;
-  --color-ring: #60a5fa;
+  --color-on-destructive: #1f0a0a;
+  --color-ring: #38bdf8;
 
   color-scheme: dark;
 }
@@ -73,7 +81,7 @@ body {
   margin: 0;
   background-color: var(--color-background);
   color: var(--color-foreground);
-  font-family: 'Fira Sans', system-ui, sans-serif;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }

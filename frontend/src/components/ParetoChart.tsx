@@ -12,6 +12,7 @@ import {
 } from 'recharts';
 import {
   FUEL_COLORS,
+  FUEL_COLORS_DARK,
   OBJECTIVE_KEYS,
   OBJECTIVE_META,
   type FuelType,
@@ -22,6 +23,11 @@ import {
 interface ParetoChartProps {
   candidates: OptimizationCandidate[];
   highlightedIndex?: number | null;
+  // Recharts sets SVG fill/stroke as literal attributes, so they don't
+  // inherit CSS custom property changes from the `.dark` class the way
+  // border/text colors do -- the active fuel-color palette must be picked
+  // explicitly based on the current theme.
+  isDark?: boolean;
 }
 
 function axisLabel(key: ObjectiveKey): string {
@@ -70,11 +76,12 @@ function CustomTooltip({ active, payload }: CustomTooltipProps) {
   );
 }
 
-export default function ParetoChart({ candidates, highlightedIndex = null }: ParetoChartProps) {
+export default function ParetoChart({ candidates, highlightedIndex = null, isDark = false }: ParetoChartProps) {
   const xId = useId();
   const yId = useId();
   const [xKey, setXKey] = useState<ObjectiveKey>('fuel_consumption');
   const [yKey, setYKey] = useState<ObjectiveKey>('lifecycle_ghg');
+  const activeFuelColors = isDark ? FUEL_COLORS_DARK : FUEL_COLORS;
 
   const fuelTypes = useMemo(() => {
     const set = new Set<FuelType>();
@@ -197,7 +204,7 @@ export default function ParetoChart({ candidates, highlightedIndex = null }: Par
                 key={fuel}
                 name={fuel.toUpperCase()}
                 data={points}
-                fill={FUEL_COLORS[fuel]}
+                fill={activeFuelColors[fuel]}
                 shape={(props: unknown) => {
                   const { cx, cy, payload } = props as { cx: number; cy: number; payload: ChartPoint };
                   const isHighlighted = highlightedIndex === payload.originalIndex;
@@ -206,7 +213,7 @@ export default function ParetoChart({ candidates, highlightedIndex = null }: Par
                       cx={cx}
                       cy={cy}
                       r={isHighlighted ? 9 : 5}
-                      fill={FUEL_COLORS[fuel]}
+                      fill={activeFuelColors[fuel]}
                       stroke={isHighlighted ? 'var(--color-accent)' : 'none'}
                       strokeWidth={isHighlighted ? 3 : 0}
                     />
