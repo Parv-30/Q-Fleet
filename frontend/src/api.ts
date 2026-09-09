@@ -1,4 +1,4 @@
-import type { OptimizationRequest, OptimizationResponse, Port, RouteOption } from './types';
+import type { OptimizationRequest, OptimizationResponse, Port, RouteOption, WeatherSample } from './types';
 
 export const API_BASE_URL: string =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) || 'http://localhost:8080';
@@ -169,4 +169,42 @@ export async function getRoutes(
   }
 
   return (await response.json()) as RouteOption[];
+}
+
+/**
+ * Real live current conditions + 5-day forecast, sampled at real waypoints
+ * along the actual computed route for this origin/destination pair (see
+ * data-service/app/weather.py's fetch_weather_along_route). This hits an
+ * external API (Open-Meteo) through two network hops (gateway -> data-service
+ * -> Open-Meteo), so it can take a few seconds -- callers should show a
+ * loading state while awaiting this.
+ */
+export async function getWeather(
+  origin: string,
+  destination: string,
+  signal?: AbortSignal
+): Promise<WeatherSample[]> {
+  let response: Response;
+  try {
+    const params = new URLSearchParams({ origin, destination });
+    response = await fetch(`${API_BASE_URL}/api/weather?${params.toString()}`, { signal });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') {
+      throw err;
+    }
+    throw new ApiError(`Could not reach the Q-Fleet gateway at ${API_BASE_URL}. Is it running?`);
+  }
+
+  if (!response.ok) {
+    let detail = '';
+    try {
+      const body = await response.json();
+      detail = body?.detail ? `: ${body.detail}` : '';
+    } catch {
+      // ignore body parse errors
+    }
+    throw new ApiError(`Failed to load live weather (HTTP ${response.status})${detail}`);
+  }
+
+  return (await response.json()) as WeatherSample[];
 }

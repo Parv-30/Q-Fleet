@@ -1,5 +1,6 @@
-import { Loader2, Play, ChevronDown, Ship, Route as RouteIcon, Package, Gauge, Fuel as FuelIcon, CloudSun, CalendarClock, Settings2 } from 'lucide-react';
-import { type FormEvent, useId, useMemo, useState } from 'react';
+import { Loader2, Play, ChevronDown, Ship, Route as RouteIcon, Package, Gauge, Fuel as FuelIcon, CloudSun, CalendarClock, Settings2, AlertTriangle, Wind, Waves, Thermometer } from 'lucide-react';
+import { type FormEvent, useEffect, useId, useMemo, useState } from 'react';
+import { getWeather, ApiError } from '../api';
 import {
   FLEET_CATALOG,
   FUEL_LABELS,
@@ -12,6 +13,7 @@ import {
   type Port,
   type RouteOption,
   type VesselType,
+  type WeatherSample,
 } from '../types';
 
 // DESIGN DECISION: multi-card single page, not a step-by-step wizard.
@@ -162,6 +164,9 @@ export default function VoyageForm({
   const [waveHeight, setWaveHeight] = useState<string>('');
   const [temperature, setTemperature] = useState<string>('');
   const [currentSpeed, setCurrentSpeed] = useState<string>('');
+  const [weatherSamples, setWeatherSamples] = useState<WeatherSample[]>([]);
+  const [weatherLoading, setWeatherLoading] = useState(false);
+  const [weatherError, setWeatherError] = useState<string>('');
 
   // --- Deadline ---
   const [deadline, setDeadline] = useState<string>('');
@@ -187,6 +192,81 @@ export default function VoyageForm({
   const iterationsId = useId();
   const swarmId = useId();
   const seedId = useId();
+
+  // When both origin and destination are chosen, fetch real live weather
+  // sampled along the route (current conditions + 5-day forecast per
+  // waypoint). This hits Open-Meteo through 2 network hops, so it can take
+  // a few seconds -- the Weather card shows a loading state meanwhile.
+  useEffect(() => {
+    if (!origin || !destination) {
+      setWeatherSamples([]);
+      setWeatherError('');
+      return;
+    }
+    const controller = new AbortController();
+    setWeatherLoading(true);
+    setWeatherError('');
+    getWeather(origin, destination, controller.signal)
+      .then((samples) => {
+        setWeatherSamples(samples);
+      })
+      .catch((err) => {
+        if (err instanceof DOMException && err.name === 'AbortError') return;
+        setWeatherSamples([]);
+        setWeatherError(err instanceof ApiError ? err.message : 'Could not load live weather for this route.');
+      })
+      .finally(() => setWeatherLoading(false));
+    return () => controller.abort();
+  }, [origin, destination]);
+
+  // Representative summary across all sampled waypoints along the route:
+  // simple averages for current conditions, and a per-day average across
+  // waypoints for the 5-day forecast (each sample already covers the same
+  // 5 upcoming dates).
+  const weatherSummary = useMemo(() => {
+    const usable = weatherSamples.filter((s) => !s.error);
+    const samples = usable.length > 0 ? usable : weatherSamples;
+    if (samples.length === 0) return null;
+
+    const avg = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
+
+    const current = {
+      temperature: avg(samples.map((s) => s.current.temperature)),
+      wind_speed: avg(samples.map((s) => s.current.wind_speed)),
+      wave_height: avg(samples.map((s) => s.current.wave_height)),
+      current_speed: avg(samples.map((s) => s.current.current_speed)),
+    };
+
+    const dayCount = Math.max(...samples.map((s) => s.forecast.length), 0);
+    const forecast = Array.from({ length: dayCount }, (_, i) => {
+      const daySamples = samples.map((s) => s.forecast[i]).filter((d): d is NonNullable<typeof d> => Boolean(d));
+      if (daySamples.length === 0) return null;
+      return {
+        date: daySamples[0].date,
+        temp_max: avg(daySamples.map((d) => d.temp_max)),
+        temp_min: avg(daySamples.map((d) => d.temp_min)),
+        wind_speed_max: avg(daySamples.map((d) => d.wind_speed_max)),
+        wave_height_max: avg(daySamples.map((d) => d.wave_height_max)),
+      };
+    }).filter((d): d is NonNullable<typeof d> => d !== null);
+
+    const anyPointErrored = weatherSamples.some((s) => s.error);
+
+    return { current, forecast, anyPointErrored, pointCount: weatherSamples.length };
+  }, [weatherSamples]);
+
+  // Prefill the manual override fields from the live summary the first time
+  // it becomes available, so a user who opens "Override weather manually"
+  // starts from real numbers rather than blank inputs. Never overwrites a
+  // value the user has already typed.
+  useEffect(() => {
+    if (!weatherSummary) return;
+    setWindSpeed((prev) => (prev === '' ? weatherSummary.current.wind_speed.toFixed(1) : prev));
+    setWaveHeight((prev) => (prev === '' ? weatherSummary.current.wave_height.toFixed(1) : prev));
+    setTemperature((prev) => (prev === '' ? weatherSummary.current.temperature.toFixed(1) : prev));
+    setCurrentSpeed((prev) => (prev === '' ? weatherSummary.current.current_speed.toFixed(1) : prev));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [weatherSummary]);
 
   const toggleFuel = (fuel: FuelType) => {
     setSelectedFuels((prev) => {
@@ -625,11 +705,97 @@ export default function VoyageForm({
         <Card
           title="Weather"
           icon={<CloudSun size={18} />}
-          subtitle="Auto by default — a documented placeholder assumption, not live weather data."
+          subtitle={
+            origin && destination
+              ? 'Live conditions sampled along the real route, from Open-Meteo.'
+              : 'Select both origin and destination to see live weather along the route.'
+          }
           defaultOpen={false}
           collapsible
         >
           <div className="flex flex-col gap-3">
+            {!(origin && destination) && (
+              <p className={helperClass}>
+                Select both origin and destination in the Route section above to fetch live current
+                conditions and a 5-day forecast sampled along that route. Until then, the optimizer falls
+                back to a fixed "typical moderate conditions" placeholder for all four weather fields.
+              </p>
+            )}
+
+            {origin && destination && weatherLoading && (
+              <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 size={12} className="animate-spin" aria-hidden="true" />
+                Fetching live weather along {origin} → {destination}… this calls Open-Meteo and can take a
+                few seconds.
+              </p>
+            )}
+
+            {origin && destination && !weatherLoading && weatherError && (
+              <p className="flex items-center gap-2 text-xs text-destructive">
+                <AlertTriangle size={12} aria-hidden="true" />
+                {weatherError}
+              </p>
+            )}
+
+            {origin && destination && !weatherLoading && !weatherError && weatherSummary && (
+              <div className="flex flex-col gap-3 rounded-lg border border-border bg-background/50 p-3">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    Current conditions along route
+                  </p>
+                  <p className="mt-1 flex flex-wrap items-center gap-x-4 gap-y-1 font-data text-sm text-foreground">
+                    <span className="flex items-center gap-1">
+                      <Thermometer size={14} className="text-primary" aria-hidden="true" />
+                      {weatherSummary.current.temperature.toFixed(1)}°C
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Wind size={14} className="text-primary" aria-hidden="true" />
+                      {weatherSummary.current.wind_speed.toFixed(1)} m/s wind
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Waves size={14} className="text-primary" aria-hidden="true" />
+                      {weatherSummary.current.wave_height.toFixed(1)} m waves
+                    </span>
+                  </p>
+                  <p className={`${helperClass} mt-1`}>
+                    Averaged across {weatherSummary.pointCount} waypoint{weatherSummary.pointCount === 1 ? '' : 's'} sampled
+                    along the route.
+                    {weatherSummary.anyPointErrored &&
+                      ' Some waypoints could not be reached and are using documented fallback values.'}
+                  </p>
+                </div>
+
+                {weatherSummary.forecast.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      5-day forecast (route average)
+                    </p>
+                    <div className="mt-1.5 grid grid-cols-5 gap-1.5">
+                      {weatherSummary.forecast.map((day, idx) => (
+                        <div
+                          key={`${day.date}-${idx}`}
+                          className="flex flex-col items-center gap-0.5 rounded-md border border-border bg-card px-1.5 py-1.5 text-center"
+                        >
+                          <span className="text-[10px] font-medium text-muted-foreground">{day.date}</span>
+                          <span className="font-data text-xs font-semibold text-foreground">
+                            {day.temp_max.toFixed(0)}° / {day.temp_min.toFixed(0)}°
+                          </span>
+                          <span className="flex items-center gap-0.5 font-data text-[10px] text-muted-foreground">
+                            <Wind size={9} aria-hidden="true" />
+                            {day.wind_speed_max.toFixed(1)}
+                          </span>
+                          <span className="flex items-center gap-0.5 font-data text-[10px] text-muted-foreground">
+                            <Waves size={9} aria-hidden="true" />
+                            {day.wave_height_max.toFixed(1)}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
               <input
                 type="checkbox"
@@ -641,8 +807,9 @@ export default function VoyageForm({
             </label>
             {!weatherOverride && (
               <p className={helperClass}>
-                Uses a fixed "typical moderate conditions" placeholder — there is no live weather feed wired
-                into this platform yet.
+                {origin && destination && weatherSummary
+                  ? 'The optimizer will use live weather fetched fresh along the route at run time. Check the box above to pin exact values instead.'
+                  : 'Uses a fixed "typical moderate conditions" placeholder when no route is set — the optimizer fetches live weather automatically once origin and destination are both given.'}
               </p>
             )}
             {weatherOverride && (
@@ -702,6 +869,11 @@ export default function VoyageForm({
                   />
                 </div>
               </div>
+            )}
+            {weatherOverride && weatherSummary && (
+              <p className={helperClass}>
+                Prefilled from the live route average above — edit any field to pin an exact value instead.
+              </p>
             )}
           </div>
         </Card>
