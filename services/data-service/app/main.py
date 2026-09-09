@@ -19,7 +19,8 @@ from fastapi import FastAPI, HTTPException, Query
 from app.feature_pipeline import FeaturePipeline
 from app.port_catalog import UnknownPortError, list_ports
 from app.routing import RoutingError, compute_route
-from common.schemas import ProcessedFeatures, VoyageRequest
+from app.weather import fetch_weather_along_route_async
+from common.schemas import ProcessedFeatures, VoyageRequest, WeatherSample
 
 # Expected location of the processed/engineered dataset once the ingestion
 # pipeline lands. One-line fix here (path + read call) once that file format
@@ -108,3 +109,24 @@ async def get_routes(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return [asdict(option) for option in options]
+
+
+@app.get("/weather", response_model=list[WeatherSample])
+async def get_weather(
+    origin: str = Query(...),
+    destination: str = Query(...),
+) -> list[WeatherSample]:
+    """Real live weather (Open-Meteo forecast + marine APIs) sampled at
+    real waypoints along the actual computed route between two known
+    ports, roughly every 500-1000km -- see app/weather.py's module
+    docstring. Each point carries both current conditions and a 5-day
+    forecast. Feeds optimization-service's optimizer (via
+    summarize_weather_for_optimizer) and is exposed here as-is for a
+    future frontend route-weather visualization.
+    """
+    try:
+        return await fetch_weather_along_route_async(origin, destination)
+    except UnknownPortError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except RoutingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc

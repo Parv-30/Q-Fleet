@@ -30,11 +30,13 @@ from app.objectives import evaluate_candidate
 from app.qpso import CandidateProposal, SearchSpace, build_search_space, run_qpso
 from app.routing_client import fetch_route_options
 from app.rpc_client import call_emissions_rpc, call_prediction_rpc
+from app.weather_client import WeatherClientError, fetch_weather_samples
 from common.schemas import (
     ObjectiveValues,
     OptimizationCandidate,
     OptimizationConstraints,
     VoyageRequest,
+    WeatherSample,
 )
 
 # Cross-service import: data-service's FeaturePipeline is not (yet)
@@ -90,6 +92,19 @@ FeaturePipeline = _feature_pipeline_module.FeaturePipeline
 
 _feature_pipeline = FeaturePipeline()
 
+# Reuses data-service's summarize_weather_for_optimizer (its pure-Python
+# aggregation logic, NOT its HTTP-calling functions -- this service talks
+# to data-service over HTTP via weather_client.py above, exactly like
+# routing_client.py does for routes) so the mean-of-current-conditions
+# aggregation rule lives in exactly one place rather than being
+# reimplemented here and risking drift. Loaded from app/weather_summary.py
+# specifically (not app/weather.py, which additionally imports
+# `app.routing` and would resolve that against THIS service's own `app`
+# package under this loading shim) -- see weather_summary.py's module
+# docstring. Same cross-service-import shim as FeaturePipeline above.
+_weather_summary_module = _load_data_service_module("weather_summary", "weather_summary.py")
+summarize_weather_for_optimizer = _weather_summary_module.summarize_weather_for_optimizer
+
 # Default RabbitMQ connection parameters -- mirrors prediction-service's
 # and emissions-service's RABBITMQ_HOST env var pattern.
 import os
@@ -107,6 +122,50 @@ RABBITMQ_HOST = os.environ.get("RABBITMQ_HOST", "localhost")
 # population is compared on a like-for-like weather/cargo basis.
 _ASSUMED_WEATHER = dict(wind_speed=8.0, wave_height=1.5, temperature=20.0, current_speed=0.5)
 _ASSUMED_CARGO_UTILIZATION = 0.75
+
+
+def _resolve_live_weather(constraints: OptimizationConstraints | None) -> dict[str, float] | None:
+    """Real live weather for this run's route, or None to fall back to
+    `_ASSUMED_WEATHER` -- see common/schemas.py's OptimizationConstraints
+    docstring's (updated) Weather fields section for the full honesty
+    contract this implements:
+
+        - origin+destination NOT both given: no real route exists to
+          sample weather along (an unconstrained search ranges over the
+          whole route catalog) -- returns None, caller falls back to
+          _ASSUMED_WEATHER exactly as before this sub-phase. Deliberately
+          NOT attempted for "every route in a large unconstrained
+          catalog" -- that would be slow and mostly wasted work.
+        - origin+destination given: calls data-service's real GET
+          /weather (via app/weather_client.py) for that exact route,
+          samples real waypoints along it, and returns
+          summarize_weather_for_optimizer's route-wide mean-of-current-
+          conditions summary.
+        - data-service/Open-Meteo unreachable (WeatherClientError) or
+          origin/destination don't resolve to a real route (e.g. unknown
+          port -- shouldn't normally happen here since routing has
+          already succeeded by the time this is called, but network
+          failures are always possible): returns None so the caller falls
+          back to _ASSUMED_WEATHER rather than crashing the whole
+          optimization run over a transient weather-fetch failure.
+
+    Called once per `run_optimization` call (not once per QPSO proposal)
+    since the live weather summary doesn't depend on which vessel/speed/
+    fuel a given proposal picks -- only on the route, which is fixed for
+    the whole run once origin+destination are given.
+    """
+    if constraints is None or constraints.origin is None or constraints.destination is None:
+        return None
+
+    try:
+        raw_samples = fetch_weather_samples(constraints.origin, constraints.destination)
+        samples = [WeatherSample.model_validate(s) for s in raw_samples]
+        return summarize_weather_for_optimizer(samples)
+    except (WeatherClientError, ValueError):
+        # ValueError covers summarize_weather_for_optimizer's empty-list
+        # guard (shouldn't happen for a real 200 response, but treated the
+        # same as an unreachable weather service: fall back, don't crash).
+        return None
 
 
 def _connection_params():
@@ -158,6 +217,7 @@ def _build_voyage_request(
     proposal: CandidateProposal,
     search_space: SearchSpace,
     constraints: OptimizationConstraints | None,
+    live_weather: dict[str, float] | None = None,
 ) -> VoyageRequest:
     vessel = search_space.vessel_catalog[proposal.vessel_index]
     route = search_space.route_catalog[proposal.route_index]
@@ -169,7 +229,12 @@ def _build_voyage_request(
         cargo_utilization = _ASSUMED_CARGO_UTILIZATION
         cargo_tonnes = vessel.capacity_tonnes * cargo_utilization
 
-    weather = dict(_ASSUMED_WEATHER)
+    # Real live weather (when resolve_search_space's origin+destination
+    # call to _resolve_live_weather succeeded) replaces the static
+    # "typical moderate conditions" placeholder as the base -- an explicit
+    # per-field constraints override (below) still wins over either, so a
+    # caller with their own numbers is never silently second-guessed.
+    weather = dict(live_weather) if live_weather is not None else dict(_ASSUMED_WEATHER)
     if constraints is not None:
         if constraints.wind_speed is not None:
             weather["wind_speed"] = constraints.wind_speed
@@ -202,13 +267,14 @@ def _evaluate_proposal(
     proposal: CandidateProposal,
     search_space: SearchSpace,
     constraints: OptimizationConstraints | None,
+    live_weather: dict[str, float] | None = None,
 ) -> ObjectiveValues:
     """The evaluate_fn QPSO's swarm calls: decode a proposal into a full
     pipeline call (features -> prediction RPC -> emissions RPC ->
     objectives), using real constraint values where given (see
     _build_voyage_request) and feeding delivery_deadline through to
     objectives.py's deadline-aware reliability calculation."""
-    voyage_request = _build_voyage_request(proposal, search_space, constraints)
+    voyage_request = _build_voyage_request(proposal, search_space, constraints, live_weather)
     features = _feature_pipeline.transform(voyage_request)
 
     connection_params = _connection_params()
@@ -270,13 +336,17 @@ def run_optimization(
     swarm_size * iterations round trips to each of prediction-service and
     emissions-service (plus, when origin+destination constraints are
     given, one extra HTTP call to data-service's /routes to resolve the
-    real route option(s) up front). Fine for a hackathon demo (see
-    app/main.py); not meant to back a low-latency endpoint.
+    real route option(s) up front, and now one more extra HTTP call to
+    data-service's /weather -- itself several real concurrent Open-Meteo
+    calls server-side -- to fetch real live weather for that route; see
+    _resolve_live_weather). Fine for a hackathon demo (see app/main.py);
+    not meant to back a low-latency endpoint.
     """
     search_space = resolve_search_space(constraints)
+    live_weather = _resolve_live_weather(constraints)
 
     def evaluate_fn(proposal: CandidateProposal) -> ObjectiveValues:
-        return _evaluate_proposal(proposal, search_space, constraints)
+        return _evaluate_proposal(proposal, search_space, constraints, live_weather)
 
     raw_population = run_qpso(
         swarm_size=swarm_size,

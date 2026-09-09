@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -141,4 +143,77 @@ class TestRoutes:
 
     def test_same_origin_and_destination_returns_400(self):
         response = client.get("/routes", params={"origin": "Mumbai", "destination": "Mumbai"})
+        assert response.status_code == 400
+
+
+class TestWeather:
+    """Exercises the /weather endpoint through FastAPI's real async request
+    handling (TestClient), with httpx.AsyncClient.get mocked to a
+    realistic fixture -- this is also the regression test for a real bug
+    caught during development: /weather originally called weather.py's
+    SYNCHRONOUS asyncio.run()-based wrapper from inside this already-async
+    route handler, which raises "asyncio.run() cannot be called from a
+    running event loop" under uvicorn/TestClient's real event loop (it
+    doesn't surface when weather.py's functions are called directly from
+    a plain synchronous test/script, which has no running loop to
+    conflict with) -- fixed by calling the *_async variants directly from
+    the route handler instead.
+    """
+
+    _FORECAST_FIXTURE = {
+        "current": {"temperature_2m": 28.1, "wind_speed_10m": 2.35},
+        "daily": {
+            "time": ["2026-09-09", "2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13"],
+            "temperature_2m_max": [28.9, 28.9, 29.4, 29.5, 27.7],
+            "temperature_2m_min": [24.5, 25.0, 25.2, 25.3, 25.1],
+            "wind_speed_10m_max": [3.83, 3.17, 3.36, 3.83, 3.92],
+        },
+    }
+    _MARINE_FIXTURE = {
+        "current": {"wave_height": 0.84},
+        "daily": {
+            "time": ["2026-09-09", "2026-09-10", "2026-09-11", "2026-09-12", "2026-09-13"],
+            "wave_height_max": [0.88, 0.86, 0.84, 0.90, 1.06],
+        },
+    }
+
+    @staticmethod
+    async def _fake_get(self, url, params=None, timeout=None):
+        class _FakeResponse:
+            def __init__(self, body):
+                self._body = body
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return self._body
+
+        is_marine = "marine-api" in url
+        return _FakeResponse(TestWeather._MARINE_FIXTURE if is_marine else TestWeather._FORECAST_FIXTURE)
+
+    def test_valid_query_returns_weather_samples_along_the_route(self):
+        with patch("httpx.AsyncClient.get", new=self._fake_get):
+            response = client.get("/weather", params={"origin": "Mumbai", "destination": "Singapore"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert len(body) >= 2
+        for sample in body:
+            assert -90.0 <= sample["lat"] <= 90.0
+            assert -180.0 <= sample["lon"] <= 180.0
+            assert sample["error"] is None
+            assert sample["current"]["temperature"] == 28.1
+            assert sample["current"]["wind_speed"] == 2.35
+            assert sample["current"]["wave_height"] == 0.84
+            assert len(sample["forecast"]) == 5
+
+    def test_unknown_origin_returns_404(self):
+        with patch("httpx.AsyncClient.get", new=self._fake_get):
+            response = client.get("/weather", params={"origin": "Atlantis", "destination": "Rotterdam"})
+        assert response.status_code == 404
+
+    def test_same_origin_and_destination_returns_400(self):
+        with patch("httpx.AsyncClient.get", new=self._fake_get):
+            response = client.get("/weather", params={"origin": "Mumbai", "destination": "Mumbai"})
         assert response.status_code == 400

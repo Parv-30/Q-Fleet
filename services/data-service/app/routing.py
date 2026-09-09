@@ -25,7 +25,8 @@ for a Los Angeles-Seattle voyage would be actively misleading.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 import searoute as sr
 
@@ -62,6 +63,16 @@ class RouteOption:
     destination: str
     distance_km: float
     via: str  # e.g. "Suez Canal, Bab-el-Mandeb Strait" or "Cape of Good Hope"
+    # Real sea-lane path this route follows, as (lat, lon) points in travel
+    # order -- extracted from searoute's GeoJSON LineString geometry (see
+    # _run_searoute). NOT evenly spaced in real distance: searoute emits
+    # more points where the Marnet graph has denser edges (e.g. near
+    # chokepoints), fewer over open ocean. Added so weather-sampling (see
+    # sample_waypoints below and app/weather.py) has real waypoints to work
+    # with instead of just a start/end pair. Defaults to () so any existing
+    # code constructing a RouteOption positionally/without this field
+    # (e.g. hand-built test fixtures) keeps working unchanged.
+    path: tuple[tuple[float, float], ...] = field(default=())
 
 
 def _describe_passages(passages: list[str]) -> str:
@@ -70,7 +81,9 @@ def _describe_passages(passages: list[str]) -> str:
     return ", ".join(_PASSAGE_LABELS.get(p, p) for p in passages)
 
 
-def _run_searoute(origin: Port, destination: Port, restrictions: list[str] | None) -> tuple[float, list[str]]:
+def _run_searoute(
+    origin: Port, destination: Port, restrictions: list[str] | None
+) -> tuple[float, list[str], tuple[tuple[float, float], ...]]:
     origin_coord = [origin.lon, origin.lat]
     dest_coord = [destination.lon, destination.lat]
     try:
@@ -87,7 +100,22 @@ def _run_searoute(origin: Port, destination: Port, restrictions: list[str] | Non
     props = result["properties"]
     distance_km = float(props["length"])
     passages = list(props.get("traversed_passages", []))
-    return distance_km, passages
+    # searoute's GeoJSON LineString geometry.coordinates is a list of
+    # [lon, lat] pairs in travel order -- flip to (lat, lon) to match this
+    # codebase's convention everywhere else (see port_catalog.py's Port).
+    # For trans-Pacific-style routes searoute can emit longitudes outside
+    # the standard [-180, 180] range (e.g. 241.9 instead of -118.1) when
+    # the route crosses the antimeridian -- normalized back into range so
+    # every consumer (waypoint sampling, WeatherSample's lon validator,
+    # any future map rendering) gets a conventional longitude.
+    raw_coords = result["geometry"]["coordinates"]
+    path = tuple((float(lat), _normalize_lon(float(lon))) for lon, lat in raw_coords)
+    return distance_km, passages, path
+
+
+def _normalize_lon(lon: float) -> float:
+    """Wrap a longitude into the conventional [-180, 180] range."""
+    return ((lon + 180.0) % 360.0) - 180.0
 
 
 # Manual in-memory cache keyed by (origin, destination) -- searoute
@@ -120,14 +148,15 @@ def compute_route(origin_port: str, destination_port: str) -> list[RouteOption]:
     origin = get_port(origin_port)
     destination = get_port(destination_port)
 
-    default_km, default_passages = _run_searoute(origin, destination, restrictions=None)
-    cape_km, cape_passages = _run_searoute(origin, destination, restrictions=["suez", "northwest"])
+    default_km, default_passages, default_path = _run_searoute(origin, destination, restrictions=None)
+    cape_km, cape_passages, cape_path = _run_searoute(origin, destination, restrictions=["suez", "northwest"])
 
     default_option = RouteOption(
         origin=origin_port,
         destination=destination_port,
         distance_km=round(default_km, 1),
         via=_describe_passages(default_passages),
+        path=default_path,
     )
 
     relative_diff = abs(cape_km - default_km) / default_km if default_km else 0.0
@@ -139,8 +168,107 @@ def compute_route(origin_port: str, destination_port: str) -> list[RouteOption]:
             destination=destination_port,
             distance_km=round(cape_km, 1),
             via=_describe_passages(cape_passages),
+            path=cape_path,
         )
         options = [default_option, cape_option]
 
     _route_cache[cache_key] = options
     return options
+
+
+# --- Geometric waypoint sampling --------------------------------------------
+#
+# searoute's path points are NOT evenly spaced in real distance (see
+# RouteOption.path's docstring), so picking every Nth array index would
+# oversample dense chokepoint regions and undersample open ocean. Instead:
+# walk the path accumulating real haversine distance between consecutive
+# points, and linearly interpolate a new point exactly at each target
+# cumulative-distance step.
+
+_EARTH_RADIUS_KM = 6371.0088
+
+# Default target spacing between sampled weather waypoints, per the user's
+# "every 500-1000km along the route" requirement -- the midpoint of that
+# range is used as the nominal step.
+DEFAULT_SAMPLE_SPACING_KM = 750.0
+
+
+def _haversine_km(p1: tuple[float, float], p2: tuple[float, float]) -> float:
+    """Great-circle distance in km between two (lat, lon) points."""
+    lat1, lon1 = math.radians(p1[0]), math.radians(p1[1])
+    lat2, lon2 = math.radians(p2[0]), math.radians(p2[1])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    return 2 * _EARTH_RADIUS_KM * math.asin(min(1.0, math.sqrt(a)))
+
+
+def _interpolate(p1: tuple[float, float], p2: tuple[float, float], fraction: float) -> tuple[float, float]:
+    """Point `fraction` of the way from p1 to p2, linear in lat/lon.
+
+    A true great-circle (slerp) interpolation would be more precise for
+    very long segments, but consecutive searoute path points are already
+    close together (that's what makes the path a usable polyline at all),
+    so plain linear interpolation is accurate enough for weather-sampling
+    purposes and much simpler.
+
+    Antimeridian-safe: longitudes are normalized to [-180, 180] (see
+    _normalize_lon), so two consecutive path points straddling the seam
+    (e.g. 179.5 and -179.5, a true 1-degree gap) would otherwise
+    interpolate the "long way around" (a near-360-degree lon delta). Takes
+    the shorter of the two directions around the circle instead.
+    """
+    lat = p1[0] + (p2[0] - p1[0]) * fraction
+    dlon = p2[1] - p1[1]
+    if dlon > 180.0:
+        dlon -= 360.0
+    elif dlon < -180.0:
+        dlon += 360.0
+    lon = _normalize_lon(p1[1] + dlon * fraction)
+    return (lat, lon)
+
+
+def sample_waypoints(
+    path: tuple[tuple[float, float], ...] | list[tuple[float, float]],
+    spacing_km: float = DEFAULT_SAMPLE_SPACING_KM,
+) -> list[tuple[float, float]]:
+    """Evenly-spaced-by-REAL-DISTANCE points along `path`, roughly every
+    `spacing_km` kilometers (measured by cumulative haversine distance
+    along consecutive path points, not by array index).
+
+    Always includes the first and last path point. For a path shorter than
+    `spacing_km`, returns just those two endpoints. Raises ValueError for
+    an empty or single-point path (can't sample a route with no path).
+    """
+    if len(path) < 2:
+        raise ValueError("sample_waypoints requires a path with at least 2 points")
+    if spacing_km <= 0:
+        raise ValueError("spacing_km must be positive")
+
+    path = list(path)
+
+    # Cumulative distance at each path point.
+    cumulative = [0.0]
+    for i in range(1, len(path)):
+        cumulative.append(cumulative[-1] + _haversine_km(path[i - 1], path[i]))
+    total_km = cumulative[-1]
+
+    if total_km == 0:
+        return [path[0]]
+
+    num_steps = max(1, round(total_km / spacing_km))
+    targets = [total_km * i / num_steps for i in range(num_steps + 1)]
+
+    waypoints: list[tuple[float, float]] = []
+    seg_idx = 0
+    for target in targets:
+        # Advance to the segment [cumulative[seg_idx], cumulative[seg_idx+1]]
+        # containing `target`.
+        while seg_idx < len(path) - 2 and cumulative[seg_idx + 1] < target:
+            seg_idx += 1
+        seg_start_km, seg_end_km = cumulative[seg_idx], cumulative[seg_idx + 1]
+        seg_len = seg_end_km - seg_start_km
+        fraction = 0.0 if seg_len == 0 else (target - seg_start_km) / seg_len
+        waypoints.append(_interpolate(path[seg_idx], path[seg_idx + 1], fraction))
+
+    return waypoints

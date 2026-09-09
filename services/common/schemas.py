@@ -134,18 +134,22 @@ class OptimizationConstraints(BaseModel):
     identically to a genuine pin -- no special-casing needed.
 
     --- Weather fields --------------------------------------------------------
-    wind_speed / wave_height / temperature / current_speed. HONESTY NOTE:
-    there is no live weather-data source wired into this codebase at all
-    (no weather API integration exists in ANY sub-phase so far). When these
-    are omitted, optimizer.py falls back to the existing hardcoded
-    `_ASSUMED_WEATHER` "typical moderate conditions" placeholder constants
-    -- exactly as it did before this model existed. Providing these fields
-    lets a caller override that placeholder with real numbers THEY already
-    have (e.g. from their own external forecast lookup); this model and
-    this sub-phase do NOT add automatic/live weather fetching. A real
-    weather-API integration (e.g. Open-Meteo, NOAA, Copernicus Marine) so
-    the platform can source these itself is a documented future
-    improvement, out of scope here.
+    wind_speed / wave_height / temperature / current_speed. UPDATED HONESTY
+    NOTE (live weather sub-phase): when these are omitted AND origin+
+    destination ARE both given, optimizer.py now fetches REAL live weather
+    (Open-Meteo forecast + marine APIs, sampled at real waypoints along the
+    actual computed route -- see data-service/app/weather.py) and
+    summarizes it into these four fields (see
+    summarize_weather_for_optimizer). Only current_speed (ocean current)
+    stays a documented placeholder constant, since no free/no-key live
+    source for it exists. When origin/destination are NOT both given
+    (fully unconstrained route search), there is no real route to sample
+    weather along, so optimizer.py falls back to the pre-existing
+    hardcoded `_ASSUMED_WEATHER` "typical moderate conditions" placeholder
+    for ALL four fields, exactly as before this sub-phase. Providing these
+    fields directly always overrides whatever source (live or placeholder)
+    would otherwise be used, for callers who already have their own
+    numbers.
 
     --- delivery_deadline -----------------------------------------------------
     Optional (per explicit user instruction: "i want operational constraint
@@ -185,6 +189,55 @@ class OptimizationConstraints(BaseModel):
 
     # --- Operational constraints (optional) ---
     delivery_deadline: datetime | None = None
+
+
+class CurrentWeather(BaseModel):
+    """Live "right now" conditions at one lat/lon, as returned by Open-Meteo's
+    standard forecast API (temperature/wind) + Marine API (wave height) --
+    see data-service/app/weather.py's module docstring for the exact
+    endpoints and units used. `current_speed` (ocean current, not wind) has
+    no free/no-key live source available -- it is a documented constant
+    placeholder here too, kept consistent with the single-value shape
+    VoyageRequest/OptimizationConstraints already use for it.
+    """
+
+    temperature: float = Field(description="degrees Celsius")
+    wind_speed: float = Field(ge=0, description="m/s")
+    wave_height: float = Field(ge=0, description="meters")
+    current_speed: float = Field(description="knots, signed -- placeholder, no live source (see module docstring)")
+
+
+class DailyForecast(BaseModel):
+    """One day of Open-Meteo's 5-day daily forecast for one lat/lon."""
+
+    date: str = Field(description="ISO 8601 date, e.g. 2026-09-09")
+    temp_max: float = Field(description="degrees Celsius")
+    temp_min: float = Field(description="degrees Celsius")
+    wind_speed_max: float = Field(ge=0, description="m/s")
+    wave_height_max: float = Field(ge=0, description="meters")
+
+
+class WeatherSample(BaseModel):
+    """Live current conditions + 5-day forecast at one waypoint along a
+    computed route (see data-service/app/routing.py's sample_waypoints and
+    app/weather.py's fetch_weather_along_route). One of these is produced
+    per sampled point along the route, roughly every 500-1000km, so the
+    full `list[WeatherSample]` for a voyage shows how weather varies along
+    its real path -- both for feeding optimization-service's optimizer
+    (see summarize_weather_for_optimizer) and for a future frontend map
+    visualization (GET /weather on data-service exposes this list as-is).
+    """
+
+    lat: float = Field(ge=-90.0, le=90.0)
+    lon: float = Field(ge=-180.0, le=180.0)
+    current: CurrentWeather
+    forecast: list[DailyForecast]
+    error: str | None = Field(
+        default=None,
+        description="Set (current/forecast then hold documented fallback values) when "
+        "Open-Meteo was unreachable or returned an unexpected response for this point -- "
+        "see fetch_weather_for_point's docstring.",
+    )
 
 
 class ProcessedFeatures(BaseModel):

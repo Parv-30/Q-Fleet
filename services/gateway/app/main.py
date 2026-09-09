@@ -18,6 +18,7 @@ Exposes:
     POST /api/emissions  -- proxies to emissions-service's POST /emissions
     GET  /api/ports      -- proxies to data-service's GET /ports
     GET  /api/routes     -- proxies to data-service's GET /routes?origin=&destination=
+    GET  /api/weather    -- proxies to data-service's GET /weather?origin=&destination=
 
 /api/optimize is the primary endpoint: the dashboard's Pareto-front
 comparison, scenario trade-off, and deployment-recommendation views are all
@@ -95,6 +96,7 @@ _PROXY_TARGETS: dict[str, str] = {
     "optimize": f"{OPTIMIZATION_SERVICE_URL}/optimize",
     "ports": f"{DATA_SERVICE_URL}/ports",
     "routes": f"{DATA_SERVICE_URL}/routes",
+    "weather": f"{DATA_SERVICE_URL}/weather",
 }
 
 
@@ -200,3 +202,12 @@ async def api_ports() -> Response:
 @app.get("/api/routes")
 async def api_routes(origin: str, destination: str) -> Response:
     return await _proxy_get(_PROXY_TARGETS["routes"], {"origin": origin, "destination": destination})
+
+
+@app.get("/api/weather")
+async def api_weather(origin: str, destination: str) -> Response:
+    # /weather can be slower than /routes (multiple real Open-Meteo HTTP
+    # calls per sampled waypoint, done concurrently server-side but still
+    # real network round trips) -- reuses the same generous _PROXY_TIMEOUT
+    # as /api/optimize rather than risking a premature gateway timeout.
+    return await _proxy_get(_PROXY_TARGETS["weather"], {"origin": origin, "destination": destination})
